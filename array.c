@@ -6,7 +6,7 @@ void *array_init(size_t item_size, size_t capacity, Allocator *allocator) {
 
     size_t total_size = sizeof(Array_Header) + (item_size * capacity);
     
-    // Pass NULL as ptr to indicate fresh allocation
+    // Pass NULL as ptr to indicate fresh allocation (malloc behavior)
     Array_Header *h = (Array_Header *)allocator->alloc(NULL, total_size, allocator->context);
     
     if (h) {
@@ -27,12 +27,11 @@ void array_free_impl(void *arr) {
     Allocator *a = h->allocator;
     
     if (a && a->alloc) {
-        // Pass pointer and size 0 to indicate deallocation
+        // Pass pointer and size 0 to indicate deallocation (free behavior)
         a->alloc(h, 0, a->context); 
     }
 }
 
-// FIXED: Removed item_size parameter. Returns NULL on OOM to prevent macro corruption.
 void *array_ensure_capacity(void *arr) {
     if (!arr) return NULL; 
 
@@ -41,29 +40,18 @@ void *array_ensure_capacity(void *arr) {
 
     if (h->length >= h->capacity) {
         size_t new_capacity = h->capacity == 0 ? ARRAY_INITIAL_CAPACITY : h->capacity * 2;
-        
-        // Use h->item_size instead of requiring it as a parameter
         size_t new_total_size = sizeof(Array_Header) + (new_capacity * h->item_size);
 
-        // Allocate fresh block to remain universally compatible with basic arenas/pools
-        Array_Header *new_h = (Array_Header *)a->alloc(NULL, new_total_size, a->context);
+        // IN-PLACE RESIZING: Pass 'h' to allow standard realloc to expand in-place.
+        // If the allocator relocates, it handles the memcpy automatically.
+        Array_Header *new_h = (Array_Header *)a->alloc(h, new_total_size, a->context);
         
-        // CRITICAL FIX: Return NULL on failure. 
-        // If we returned the old pointer, the macro would assume success and write out of bounds.
-        if (!new_h) {
-            return NULL; 
-        }
+        // OOM SAFETY: If allocation fails, new_h is NULL. 
+        // The allocator contract guarantees 'h' is still valid.
+        if (!new_h) return NULL; 
 
+        // Update capacity (length and item_size remain unchanged)
         new_h->capacity = new_capacity;
-        new_h->length = h->length;
-        new_h->item_size = h->item_size;
-        new_h->allocator = h->allocator;
-        
-        memcpy(new_h + 1, h + 1, h->length * h->item_size);
-
-        // Free old tracking block
-        a->alloc(h, 0, a->context);
-
         return (void *)(new_h + 1);
     }
 
