@@ -6,7 +6,9 @@
 
 typedef struct Allocator Allocator;
 
-// Realloc-style allocator signature
+// Realloc-style allocator signature.
+// CONTRACT: If ptr != NULL and size > 0, and allocation fails, the allocator 
+// MUST return NULL and leave the original ptr valid and untouched.
 typedef void* (*AllocatorFunc)(void *ptr, size_t size, void *context);
 
 struct Allocator {
@@ -19,12 +21,11 @@ typedef struct {
     size_t length;         
     size_t item_size;      
     Allocator *allocator;  
-    max_align_t _align;    // Ensures payload is strictly aligned for SIMD/over-aligned types
+    max_align_t _align;    // Guarantees strict alignment for SIMD/over-aligned payloads
 } Array_Header;            
 
 #define ARRAY_INITIAL_CAPACITY 4
 
-// FIXED: Renamed from __array_hdr to avoid reserved identifier conflicts
 #define array_hdr_(a) ((Array_Header *)(a) - 1)
 
 #define array(T, allocator_ptr) \
@@ -38,23 +39,18 @@ typedef struct {
 } while(0)
 
 /* ========================================================================
- * MACRO IMPLEMENTATION WITH DOUBLE-EVALUATION SAFEGUARDS
+ * MACRO IMPLEMENTATION
  * ======================================================================== */
 #if defined(__GNUC__) || defined(__clang__)
 
-/* GCC/Clang Implementation: Evaluates arguments exactly once */
+/* GCC/Clang Implementation: Uses statement expressions and typeof for perfect safety */
 #define array_push(a, value) ({                                             \
     __typeof__(a) *_ptr_ref = &(a);                                         \
     void *_moved = array_ensure_capacity(*_ptr_ref);                        \
-    if (_moved != NULL) {                                                   \
-        *_ptr_ref = _moved;                                                 \
-    }                                                                       \
-    /* Check if we actually have space (handles OOM gracefully) */          \
+    if (_moved != NULL) *_ptr_ref = _moved;                                 \
     int _success = (*_ptr_ref != NULL &&                                    \
                     array_hdr_(*_ptr_ref)->length < array_hdr_(*_ptr_ref)->capacity); \
-    if (_success) {                                                         \
-        (*_ptr_ref)[array_hdr_(*_ptr_ref)->length++] = (value);             \
-    }                                                                       \
+    if (_success) (*_ptr_ref)[array_hdr_(*_ptr_ref)->length++] = (value);   \
     _success;                                                               \
 })
 
@@ -70,25 +66,34 @@ typedef struct {
 
 #else
 
-/* Standard C Fallback: Explicit warning for multiple argument evaluation */
+/* Standard C Fallback (MSVC, etc.) 
+ * CONTRACT: 'a' must be a simple lvalue without side-effects (e.g., cannot be arr[i++]) */
 #define array_push(a, value) do {                                           \
     void *_target_ptr = (a);                                                \
     if (_target_ptr) {                                                      \
         void *_moved = array_ensure_capacity(_target_ptr);                  \
         if (_moved != NULL) {                                               \
-            (a) = _moved;                                                   \
+            (a) = _moved; /* Unavoidable lvalue re-evaluation in Std C */   \
+            _target_ptr = _moved;                                           \
         }                                                                   \
-        /* Prevent OOB write if allocation failed */                        \
-        if (array_hdr_(a)->length < array_hdr_(a)->capacity) {              \
-            (a)[array_hdr_(a)->length++] = (value);                         \
+        Array_Header *_h = array_hdr_(_target_ptr);                         \
+        if (_h->length < _h->capacity) {                                    \
+            (a)[_h->length++] = (value);                                    \
         }                                                                   \
     }                                                                       \
 } while(0)
 
 #define array_pop(a, out_value) do {                                        \
     void *_arr_pop = (a);                                                   \
-    if (_arr_pop && array_hdr_(_arr_pop)->length > 0) {                     \
-        (out_value) = (a)[--array_hdr_(a)->length];                         \
+    if (_arr_pop) {                                                         \
+        Array_Header *_h = array_hdr_(_arr_pop);                            \
+        if (_h->length > 0) {                                               \
+            _h->length--;                                                   \
+            /* Strictly Standard C: Use memcpy to avoid void* math and typeof */ \
+            memcpy(&(out_value),                                            \
+                   (char*)_arr_pop + (_h->length * _h->item_size),          \
+                   _h->item_size);                                          \
+        }                                                                   \
     }                                                                       \
 } while(0)
 
@@ -98,12 +103,9 @@ typedef struct {
 #define array_capacity(a) ((a) ? array_hdr_(a)->capacity : 0)
 
 #define array_clear(a) do {                                                 \
-    if (a) {                                                                \
-        array_hdr_(a)->length = 0;                                          \
-    }                                                                       \
+    if (a) array_hdr_(a)->length = 0;                                       \
 } while(0)
 
-// FIXED: Removed item_size parameter as it is now tracked in the header
 void *array_init(size_t item_size, size_t capacity, Allocator *allocator);
 void  array_free_impl(void *arr);
 void *array_ensure_capacity(void *arr);
