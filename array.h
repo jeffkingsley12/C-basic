@@ -6,6 +6,7 @@
 
 typedef struct Allocator Allocator;
 
+// Realloc-style allocator signature
 typedef void* (*AllocatorFunc)(void *ptr, size_t size, void *context);
 
 struct Allocator {
@@ -18,12 +19,13 @@ typedef struct {
     size_t length;         
     size_t item_size;      
     Allocator *allocator;  
+    max_align_t _align;    // Ensures payload is strictly aligned for SIMD/over-aligned types
 } Array_Header;            
 
 #define ARRAY_INITIAL_CAPACITY 4
 
-/* Helper macro to safely access the header block */
-#define __array_hdr(a) ((Array_Header *)(a) - 1)
+// FIXED: Renamed from __array_hdr to avoid reserved identifier conflicts
+#define array_hdr_(a) ((Array_Header *)(a) - 1)
 
 #define array(T, allocator_ptr) \
     (T *)array_init(sizeof(T), ARRAY_INITIAL_CAPACITY, (allocator_ptr))
@@ -43,12 +45,15 @@ typedef struct {
 /* GCC/Clang Implementation: Evaluates arguments exactly once */
 #define array_push(a, value) ({                                             \
     __typeof__(a) *_ptr_ref = &(a);                                         \
-    void *_moved = array_ensure_capacity(*_ptr_ref, sizeof(**_ptr_ref));    \
-    int _success = (_moved != NULL);                                        \
-    if (_success) {                                                         \
+    void *_moved = array_ensure_capacity(*_ptr_ref);                        \
+    if (_moved != NULL) {                                                   \
         *_ptr_ref = _moved;                                                 \
-        Array_Header *_h = __array_hdr(*_ptr_ref);                          \
-        (*_ptr_ref)[_h->length++] = (value);                                \
+    }                                                                       \
+    /* Check if we actually have space (handles OOM gracefully) */          \
+    int _success = (*_ptr_ref != NULL &&                                    \
+                    array_hdr_(*_ptr_ref)->length < array_hdr_(*_ptr_ref)->capacity); \
+    if (_success) {                                                         \
+        (*_ptr_ref)[array_hdr_(*_ptr_ref)->length++] = (value);             \
     }                                                                       \
     _success;                                                               \
 })
@@ -56,8 +61,8 @@ typedef struct {
 #define array_pop(a, out_value) ({                                          \
     __typeof__(a) _arr = (a);                                               \
     int _popped = 0;                                                        \
-    if (_arr && __array_hdr(_arr)->length > 0) {                            \
-        (out_value) = _arr[--__array_hdr(_arr)->length];                    \
+    if (_arr && array_hdr_(_arr)->length > 0) {                             \
+        (out_value) = _arr[--array_hdr_(_arr)->length];                     \
         _popped = 1;                                                        \
     }                                                                       \
     _popped;                                                                \
@@ -69,33 +74,38 @@ typedef struct {
 #define array_push(a, value) do {                                           \
     void *_target_ptr = (a);                                                \
     if (_target_ptr) {                                                      \
-        void *_moved = array_ensure_capacity(_target_ptr, sizeof(*(a)));    \
-        if (_moved) {                                                       \
+        void *_moved = array_ensure_capacity(_target_ptr);                  \
+        if (_moved != NULL) {                                               \
             (a) = _moved;                                                   \
-            (a)[__array_hdr(a)->length++] = (value);                        \
+        }                                                                   \
+        /* Prevent OOB write if allocation failed */                        \
+        if (array_hdr_(a)->length < array_hdr_(a)->capacity) {              \
+            (a)[array_hdr_(a)->length++] = (value);                         \
         }                                                                   \
     }                                                                       \
 } while(0)
 
-#define array_pop(a, out_value) do {                                         \
-    if ((a) && __array_hdr(a)->length > 0) {                                \
-        (out_value) = (a)[--__array_hdr(a)->length];                        \
+#define array_pop(a, out_value) do {                                        \
+    void *_arr_pop = (a);                                                   \
+    if (_arr_pop && array_hdr_(_arr_pop)->length > 0) {                     \
+        (out_value) = (a)[--array_hdr_(a)->length];                         \
     }                                                                       \
 } while(0)
 
 #endif
 
-#define array_length(a)   ((a) ? __array_hdr(a)->length   : 0)
-#define array_capacity(a) ((a) ? __array_hdr(a)->capacity : 0)
+#define array_length(a)   ((a) ? array_hdr_(a)->length   : 0)
+#define array_capacity(a) ((a) ? array_hdr_(a)->capacity : 0)
 
 #define array_clear(a) do {                                                 \
     if (a) {                                                                \
-        __array_hdr(a)->length = 0;                                         \
+        array_hdr_(a)->length = 0;                                          \
     }                                                                       \
 } while(0)
 
+// FIXED: Removed item_size parameter as it is now tracked in the header
 void *array_init(size_t item_size, size_t capacity, Allocator *allocator);
 void  array_free_impl(void *arr);
-void *array_ensure_capacity(void *arr, size_t item_size);
+void *array_ensure_capacity(void *arr);
 
 #endif /* ARRAY_H */
