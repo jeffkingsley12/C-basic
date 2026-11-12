@@ -1,45 +1,50 @@
-#ifndef STRING_POOL_H
-#define STRING_POOL_H
+#ifndef STRING_LIB_H
+#define STRING_LIB_H
 
-#include "dict.h"
-#include "string_lib.h"
-
-/**
- * @file string_pool.h
- * @brief String Interning Pool for Compiler Frontends
- *
- * This module provides string deduplication for compiler tokenization and symbol tables.
- * Interned strings can be compared by pointer equality (O(1)) instead of string comparison (O(M)).
- *
- * This implementation uses the atomic String* type to leverage:
- * - O(1) cached hashing via string_hash()
- * - Thread-safe atomic reference counting
- * - Explicit length tracking
- *
- * THREAD SAFETY WARNING:
- * This implementation is NOT thread-safe. The underlying dictionary operations (set, get, resize)
- * are not protected by locks. For multi-threaded parsing:
- * - Option 1: Use thread-local pools (recommended) - give each thread its own StringPool
- * - Option 2: Add external synchronization (pthread_rwlock_t) around string_pool_intern calls
- */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdatomic.h>
+#include "ce_types.h"
+#include "vector.h"
 
 typedef struct {
-    Dictionary *map;       // Uses String* as keys and values
+    size_t length;
     Allocator *allocator;
-} StringPool;
+    _Atomic uint32_t hash;
+    _Atomic uint32_t refcount;
+    char data[];
+} String;
 
-// Global or context-instantiated lifecycle management
-StringPool* string_pool_create(Allocator *allocator);
+typedef struct {
+    String **strings;
+    size_t count;
+    Allocator *alloc;
+} StringArray;
 
-/**
- * @brief Interns a String* into the pool.
- * @note OWNERSHIP CONTRACT:
- *   - On success (non-NULL return): consumes/adopts the caller's reference to `str` and returns
- *     a new owned reference to the canonical interned String*.
- *   - On failure (NULL return): does NOT consume `str`; the caller remains responsible for `string_unref(str)`.
- */
-String* string_pool_intern(StringPool *pool, String *str);
+String *string_create(const char *src, Allocator *alloc);
+String *string_create_with_len(const char *src, size_t len, Allocator *alloc);
+String *string_ref(String *s);
+void string_unref(String *s);
+String *string_empty(Allocator *alloc);
+size_t string_len(const String *s);
+const char *string_c_str(const String *s);
+bool string_equal(const String *s1, const String *s2);
+bool string_equal_void(const void *s1, const void *s2);
+int string_compare(const String *s1, const String *s2);
+uint32_t string_hash(const String *s);
+uint32_t string_hash_void(const void *s);
+intptr_t string_find(const String *s, const String *sub, size_t start);
+intptr_t string_rfind(const String *s, const String *sub, intptr_t start);
+bool string_contains(const String *s, const String *sub);
+bool string_starts_with(const String *s, const String *prefix);
+bool string_ends_with(const String *s, const String *suffix);
+String *string_concat(const String *s1, const String *s2);
+String *string_slice(const String *s, intptr_t start, intptr_t end);
+String *string_repeat(const String *s, size_t count);
+String *string_replace(const String *s, const String *old_sub, const String *new_sub);
+StringArray string_split(const String *s, const String *sep, Allocator *alloc);
+void string_array_free(StringArray *arr);
+String *string_join(const String *sep, const StringArray *arr, Allocator *alloc);
 
-void string_pool_free(StringPool *pool);
-
-#endif // STRING_POOL_H
+#endif /* STRING_LIB_H */

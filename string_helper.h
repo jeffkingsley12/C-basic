@@ -1,27 +1,30 @@
-#ifndef STRING_HELPER_H
-#define STRING_HELPER_H
+#ifndef LIST_H
+#define LIST_H
 
 #include <stddef.h>
+#include "ce_types.h"
 #include "vector.h"
 
-/**
- * @brief Checks whether a positive integer is an exact power of two.
- */
-#define IS_POWER_OF_TWO(A) ((size_t)(A) != 0 && (((size_t)(A) & ((size_t)(A) - 1)) == 0))
+typedef void (*ListItemRefCallback)(void *item, Allocator *allocator);
+typedef struct {
+    void **items;
+    size_t length;
+    size_t capacity;
+    Allocator *allocator;
+    ListItemRefCallback ref_callback;
+} List;
 
-/**
- * @brief Aligns a size upwards to the nearest multiple of a power-of-two alignment boundary.
- * @note Uses bitwise manipulation: (size + (A - 1)) & ~(A - 1)
- */
-#define ALIGN_UP(size, A) (((size_t)(size) + ((size_t)(A) - 1)) & ~((size_t)(A) - 1))
+List *list_create(size_t initial_capacity, Allocator *allocator, ListItemRefCallback ref_callback);
+int list_append(List *list, void *item);
+int list_insert(List *list, size_t index, void *item);
+void *list_remove(List *list, size_t index);
+void *list_pop(List *list);
+void *list_get(const List *list, size_t index);
+int list_set(List *list, size_t index, void *item);
+void list_clear(List *list);
+int list_resize(List *list, size_t new_capacity);
+size_t list_length(const List *list);
+size_t list_capacity(const List *list);
+void list_free(List *list);
 
-/**
- * @brief Allocates an exactly-sized, padded string bucket routed through the vector's unified Allocator.
- * @param src The source null-terminated C string.
- * @param alignment The target byte boundary alignment (must be a power of two, e.g., 8, 16).
- * @param allocator Pointer to the unified subsystem Allocator context block.
- * @return Pointer to the allocated padded string payload, or NULL on OOM or error.
- */
-char* create_padded_string_impl(const char *src, size_t alignment, Allocator *allocator);
-
-#endif // STRING_HELPER_H
+#endif /* LIST_H */
